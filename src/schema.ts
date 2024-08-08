@@ -17,14 +17,17 @@ export const blocks = pgTable('blocks', {
 	chainwork: text('chainwork').notNull(),
 	nTx: integer('n_tx').notNull(),
 	previousblockhash: text('previousblockhash').notNull(),
-	nextblockhash: text('nextblockhash').notNull(),
+	nextblockhash: text('nextblockhash'),
 	strippedsize: integer('strippedsize').notNull(),
 	size: bigint('size', { mode: 'number' }).notNull(),
 	weight: bigint('weight', { mode: 'number' }).notNull(),
 	createdAt: timestamp('created_at').notNull().defaultNow(),
 	updatedAt: timestamp('updated_at')
-
 });
+
+export const blocksRelations = relations(blocks, ({ many }) => ({
+	transactions: many(transactions),
+}));
 
 export const transactions = pgTable('transactions', {
 	id: serial('id').primaryKey(),
@@ -37,10 +40,21 @@ export const transactions = pgTable('transactions', {
 	updatedAt: timestamp('updated_at')
 });
 
+export const transactionsRelations = relations(transactions, ({ one, many }) => ({
+	block: one(blocks, {
+		fields: [transactions.blockId],
+		references: [blocks.id],
+	}),
+	spaceHistories: many(spacesHistory),
+}));
+
 export const spaces = pgTable('spaces', {
 	id: serial('id').primaryKey(),
 	name: text('name').notNull().unique(),
+	nameSha256: text('name_sha256').notNull(),
 	status: text('status').notNull(),
+	bid_amount: integer('bid_amount'),
+	claimHeight: integer('claim_height'),
 	spacesHistoryId: integer('spaces_history_id').references(() => spacesHistory.id, { onDelete: 'cascade' }),
 	createdAt: timestamp('created_at').notNull().defaultNow(),
 	updatedAt: timestamp('updated_at')
@@ -67,6 +81,10 @@ export const spacesHistoryRelations = relations(spacesHistory, ({ one }) => ({
 	space: one(spaces, {
 		fields: [spacesHistory.spaceId],
 		references: [spaces.id],
+	}),	
+	transaction: one(transactions, {
+		fields: [spacesHistory.transactionId],
+		references: [transactions.id],
 	}),
 }));
 
@@ -76,4 +94,11 @@ export const syncs = pgTable('syncs', {
 	endBlockHeight: integer('end_block_height').notNull(),
 	durationSeconds: integer('duration_seconds').notNull(),
 	createdAt: timestamp('created_at').notNull().defaultNow()
+});
+
+export const blockStats = pgTable('block_stats', {
+	id: serial('id').primaryKey(),
+	blockHeight: integer('block_height'),
+	createdAt: timestamp('created_at').notNull().defaultNow(),
+	updatedAt: timestamp('updated_at')
 });

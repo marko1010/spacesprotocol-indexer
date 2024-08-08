@@ -1,10 +1,11 @@
 import { SimpleRpcClient } from './rpc.js';
-import { spaces, spacesHistory, blocks, transactions, syncs } from './schema.js';
+import { spaces, spacesHistory, blocks, transactions, syncs, blockStats } from './schema.js';
 import { getDb } from './db.js';
 import fs from 'fs/promises';
 import { sql, desc } from 'drizzle-orm';
 import { performance } from 'perf_hooks';
 import cron from 'node-cron';
+import { sha256SpaceName } from './utils.js';
 
 type NewSpaceHistory = typeof spacesHistory.$inferInsert;
 
@@ -103,7 +104,8 @@ class SimpleIndexer {
                 }))).returning();
 
                 for (let tx of spaceTxs) {
-                    for (let vout of tx.vout) {
+                    for (let i = 0; i < tx.vout.length; i++) {
+                        let vout = tx.vout[i];
                         if (!vout.name || vout.covenant?.type !== 'transfer') continue;
                         let spaceDb = (await dbTx.select().from(spaces).where(sql`${spaces.name} = ${vout.name}`))?.[0];
 
@@ -114,7 +116,7 @@ class SimpleIndexer {
                             txid: tx.txid,
                             action: 'transfer',
                             bid_amount: null,
-                            meta: vout
+                            meta: {...vout, outpoint: `${tx.txid}:${i}`}
                         }).returning())?.[0];
 
                         if (spaceDb.status != 'registered')
@@ -129,7 +131,13 @@ class SimpleIndexer {
                         let spaceDb = (await dbTx.select().from(spaces).where(sql`${spaces.name} = ${name}`))?.[0];
 
                         if (!spaceDb) {
-                            spaceDb = (await dbTx.insert(spaces).values({ name: name, status: 'pre-auction' }).returning())?.[0];
+                            spaceDb = (await dbTx.insert(spaces).values({ 
+                                name, 
+                                nameSha256: sha256SpaceName(name.slice(1)),
+                                claim_height: meta.covenant?.claim_height, 
+                                status: 'pre-auction',
+                                bid_amount: meta.covenant?.total_burned
+                            }).returning())?.[0];
                             newSpaceStatus = 'pre-auction';
                         }
 
@@ -138,6 +146,7 @@ class SimpleIndexer {
                         let action = null;
                         let bid_amount = null;
 
+                        
                         if (meta.bid_value != null) {
                             action = 'rollout';
                             newSpaceStatus = 'auction';
@@ -147,12 +156,12 @@ class SimpleIndexer {
                         } else if (meta.covenant?.type === 'bid') {
                             action = 'bid';
                             bid_amount = meta.covenant.total_burned;
-                        } else if (meta.action != null){
+                        } else if (meta.action != null) {
                             if (meta.action === 'revoke')
                                 newSpaceStatus = 'revoked';
                             action = meta.action;
                         }
-
+                        
                         const historyRecord = (await dbTx.insert(spacesHistory).values({
                             spaceName: spaceDb.name,
                             spaceId: spaceDb.id,
@@ -162,10 +171,24 @@ class SimpleIndexer {
                             bid_amount,
                             meta
                         }).returning())?.[0];
-
+                        
+                        const forUpdate: any = {};
                         if (newSpaceStatus) {
-                            await dbTx.update(spaces).set({ status: newSpaceStatus, spacesHistoryId: historyRecord.id, updatedAt: sql`now()` }).where(sql`${spaces.id} = ${spaceDb.id}`);
+                            forUpdate.status = newSpaceStatus;
+                            forUpdate.spacesHistoryId = historyRecord.id;
                         }
+                        
+                        if (meta.covenant?.claim_height != null && spaceDb.claim_height != meta.covenant?.claim_height)
+                            forUpdate.claimHeight = meta.covenant.claim_height;
+
+                        if (bid_amount != null && bid_amount != spaceDb.bid_amount)
+                            forUpdate.bid_amount = bid_amount;
+                        
+                        if (Object.keys(forUpdate).length)
+                            await dbTx.update(spaces).set({ 
+                                ...forUpdate,
+                                updatedAt: sql`now()` 
+                            }).where(sql`${spaces.id} = ${spaceDb.id}`);
                     }
                 }
             });
@@ -226,6 +249,13 @@ async function sync() {
             endBlockHeight = height;
             height++;
         }
+
+        const stats = await db.select().from(blockStats);
+        if (!stats.length)
+            await db.insert(blockStats).values({ blockHeight: blockCount });
+        else
+            await db.update(blockStats).set({ blockHeight: blockCount, updatedAt: sql`now()` });
+
     } catch (error) {
         console.error(error);
     } finally {
@@ -246,9 +276,9 @@ async function sync() {
 
 
 console.log('scheduling syncs');
-// cron.schedule('* * * * *', async () => {
-//     console.log('Cron: starting sync...');
-//     await sync().catch(console.error);
-// });
+cron.schedule('* * * * *', async () => {
+    console.log('Cron: starting sync...');
+    await sync().catch(console.error);
+});
 
-sync().catch(console.error);
+// sync().catch(console.error);

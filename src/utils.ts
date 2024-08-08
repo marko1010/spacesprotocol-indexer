@@ -1,4 +1,5 @@
 import { bech32m } from 'bech32'; 
+import crypto from 'crypto';
 
 export function decodeScriptPubKeyToTaprootAddress(scriptPubKey, network = 'mainnet') {
   if (!scriptPubKey.startsWith('5120') || scriptPubKey.length !== 68) {
@@ -19,4 +20,14 @@ export function decodeScriptPubKeyToTaprootAddress(scriptPubKey, network = 'main
   const address = bech32m.encode(hrp, [1].concat(pubkeyBits));
   
   return address;
+}
+
+export function sha256SpaceName(spaceName) {
+  const byteArray = Buffer.from(spaceName, 'utf8');
+  const lengthPrefix = Buffer.from([byteArray.length]);
+  const lengthPrefixedByteArray = Buffer.concat([lengthPrefix, byteArray]);
+  const finalByteArray = Buffer.concat([lengthPrefixedByteArray, Buffer.from([0])]);
+  const sha256Hash = crypto.createHash('sha256').update(finalByteArray).digest('hex');
+
+  return sha256Hash;
 }
